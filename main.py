@@ -20,6 +20,8 @@ def scale_to_fit(img: pygame.Surface, max_w: int, max_h: int) -> pygame.Surface:
     new_size = (int(iw * scale), int(ih * scale))
     return pygame.transform.smoothscale(img, new_size)
 
+finish_line = pygame.image.load('res/finish.png').convert_alpha()
+rotated_finish_line = pygame.transform.rotate(finish_line, 90)
 
 # Load track image and scale to fit window
 track = pygame.image.load('res/track.png')
@@ -108,9 +110,12 @@ while running:
         print("Collision detected!")
         x, y = 550, 80
         angle = 0
+        speed = 0
 
+    screen.blit(rotated_finish_line, (570, 20))  # Draw the finish line
     screen.blit(car_rot, car_rect)  # Draw the car
     screen.blit(track_border_scaled, track_border_rect)  # Draw the track boarder
+
 
     pygame.display.flip()
 
