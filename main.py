@@ -12,7 +12,8 @@ pygame.display.set_caption("Race Track ML - stage 0")
 
 # Sets frame rate
 clock = pygame.time.Clock()
-
+# for displaying the timer
+font = pygame.font.SysFont(None, 24)
 
 def scale_to_fit(img: pygame.Surface, max_w: int, max_h: int) -> pygame.Surface:
     iw, ih = img.get_size()
@@ -27,6 +28,8 @@ rotated_finish_line = pygame.transform.rotate(finish_line, 90)
 track = pygame.image.load('res/track.png')
 track_scaled = scale_to_fit(track, WIDTH, HEIGHT)
 track_rect = track_scaled.get_rect(center=(WIDTH // 2, HEIGHT // 2))
+# Position finish line
+finish_rect = rotated_finish_line.get_rect(topleft=(570, 20))
 
 # Load track boarder image
 track_border = pygame.image.load('res/track-border.png').convert_alpha()
@@ -34,8 +37,10 @@ track_border_scaled = scale_to_fit(track_border, WIDTH, HEIGHT)
 track_border_rect = track_border_scaled.get_rect(center=(WIDTH // 2, HEIGHT // 2))
 boarder_mask = pygame.mask.from_surface(track_border_scaled)
 
+# Load car image and scale it down
 car_img = pygame.image.load('res/green-car.png')
 car_scaled = pygame.transform.scale_by(car_img, 0.5)
+
 
 x, y = 550, 80
 speed = 0
@@ -46,6 +51,10 @@ MAX_SPEED = 250
 ACCEL = 150
 FRICTION = 450
 
+timer_running = False # are we timing the lap?
+start_time = 0 # when the lap started in ms
+current_time = 0 # current lap time in ms
+
 running = True
 while running:
     dt = clock.tick(60) / 1000  # Delta time in seconds
@@ -54,16 +63,18 @@ while running:
         if event.type == pygame.QUIT:
             running = False
 
+    if timer_running:
+        current_time = pygame.time.get_ticks() - start_time
+
     keys = pygame.key.get_pressed()
     # move car based on key presses
 
     throttle = 0.0
-    if keys[K_UP]:
+    if keys[K_UP] or keys[K_w]:
         throttle += 1.0
-        print("up")
-    if keys[K_DOWN]:
+    if keys[K_DOWN] or keys[K_s]:
         throttle -= 1.0
-        print("down")
+
 
     if throttle != 0.0:
         speed += throttle * ACCEL * dt
@@ -77,12 +88,11 @@ while running:
     speed = max(-MAX_SPEED, min(MAX_SPEED, speed))
 
     steer = 0.0
-    if keys[K_LEFT]:
+    if keys[K_LEFT] or keys[K_a]:
         steer -= 1.0
-        print("left")
-    if keys[K_RIGHT]:
+    if keys[K_RIGHT] or keys[K_d]:
         steer += 1.0
-        print("right")
+
 
     steer_strength = min(1.0, abs(speed) / MAX_SPEED)
     angle += steer * TURN_RATE * steer_strength * dt
@@ -102,19 +112,34 @@ while running:
     car_rect = car_rot.get_rect(center=(x, y))
     car_mask = pygame.mask.from_surface(car_rot)
 
+    if car_rect.colliderect(finish_rect) and not timer_running:
+        timer_running = True
+        start_time = pygame.time.get_ticks()
+
     # if there is overlap between car and track boarder, slow car and reset position
-    offset = (car_rect.left - track_rect.left, car_rect.top - track_rect.top)
+    offset = (car_rect.left - track_border_rect.left, car_rect.top - track_border_rect.top)
     hit = boarder_mask.overlap(car_mask, offset)
 
     if hit:
+        # hx, hy = hit
+        # world_hit_x = hx + track_border_rect.left
+        # world_hit_y = hy + track_border_rect.top
+        # pygame.draw.circle(screen, (255, 0, 0), (world_hit_x, world_hit_y), 4)
         print("Collision detected!")
         x, y = 550, 80
         angle = 0
         speed = 0
+        timer_running = False
+        current_time = 0
 
     screen.blit(rotated_finish_line, (570, 20))  # Draw the finish line
     screen.blit(car_rot, car_rect)  # Draw the car
     screen.blit(track_border_scaled, track_border_rect)  # Draw the track boarder
+
+    # display timer
+    seconds = current_time / 1000
+    timer_text = font.render(f"Time: {seconds:.2f}s", True, (255, 255, 255))
+    screen.blit(timer_text, (20, 20))
 
 
     pygame.display.flip()
