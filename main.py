@@ -65,7 +65,7 @@ speed = 0
 angle = 0
 
 # Car constants
-TURN_RATE = 4
+TURN_RATE = 4 #
 MAX_SPEED = 250
 ACCEL = 150
 FRICTION = 450
@@ -76,13 +76,53 @@ start_time = 0  # when the lap started in ms
 current_time = 0  # current lap time in ms
 
 # Lap timing variables
+prev_cp = 0 # index of previous checkpoint hit
 next_cp = 0  # index of next checkpoint to hit
 lap_armed = False  # becomes true after crossing start line
 best_lap = None  # best lap time in ms
 last_lap = None  # last lap time in ms
 was_on_finish = False  # was the car on the finish line last frame
 
-ray_offsets = [-1.2, -1.0, -0.8, 0.0, 0.8, 1.0, 1.2]
+ray_offsets_rad = [-1.2, -1.0, -0.8, 0.0, 0.8, 1.0, 1.2] # ray angles relative to car angle
+
+def compute_reward(
+        speed_norm: float,
+        ray_distances: list[int],
+        max_distance: int,
+        cp_advanced: bool,
+        finished_lap: bool,
+        collided: bool
+)->float:
+    SPEED_REWARD_SCALE = 0.05
+    WALL_PENALTY_SCALE = 0.03
+    CP_REWARD = 1.0
+    LAP_REWARD = 10.0
+    CRASH_PENALTY = 10.0
+    PROGRESS_REWARD = 0.1
+    reward = 0.0
+
+    reward += max(0.0, speed_norm) * SPEED_REWARD_SCALE # reward for moving forward
+
+    # wall proximity penality (encourage staying centered)
+    min_ray = min(ray_distances) # minimum ray distance - closest to the wall
+    closeness = 1.0 - (min_ray/max_distance)
+    reward -= closeness * WALL_PENALTY_SCALE
+
+    progress = next_cp / len(checkpoints)
+    reward += progress * PROGRESS_REWARD
+
+    # crossing checkpoints and finishing lap and collisions
+    if cp_advanced:
+        reward += CP_REWARD
+    if finished_lap:
+        reward += LAP_REWARD
+    if collided:
+        reward -= CRASH_PENALTY
+
+    return reward
+
+
+
 
 def get_observation(
     x, y, angle, speed,
@@ -104,8 +144,8 @@ def get_observation(
 
     for off in offsets:
         ray_angle = angle + off
-        dx = math.cos(ray_angle)
-        dy = math.sin(ray_angle)
+        dx = math.cos(ray_angle) # ray direction vector
+        dy = math.sin(ray_angle) # ray direction vector
 
         hit_dist = max_distance
 
@@ -128,17 +168,17 @@ def get_observation(
         hit_x = int(sx + dx * hit_dist)
         hit_y = int(sy + dy * hit_dist)
 
-        ray_distances.append(hit_dist)
-        ray_hits.append((hit_x, hit_y))
+        ray_distances.append(hit_dist) # distance to hit in pixels
+        ray_hits.append((hit_x, hit_y)) # hit position in screen coords
 
-    # normalize rays to [0,1]
+    # normalize rays to [0,1] from pixels
     rays_norm = [d / max_distance for d in ray_distances]
 
     # normalize speed to [-1,1]
     speed_norm = max(-1.0, min(1.0, speed / max_speed))
 
     # observation vector (ML-friendly)
-    obs = rays_norm + [speed_norm, math.sin(angle), math.cos(angle)]
+    obs = rays_norm + [speed_norm, math.sin(angle), math.cos(angle)] # normalised values rays + speed + angle (radians)
 
     return obs, ray_distances, ray_hits, (sx, sy) # return sensor start position
 
@@ -189,20 +229,27 @@ while running:
     x += dx * speed * dt
     y += dy * speed * dt
 
-    screen.fill((25, 25, 25))  # Fill the screen with blacka
+    screen.fill((25, 25, 25))  # Fill the screen with black
     screen.blit(track_scaled, track_rect)  # Draw the track
 
     car_rot = pygame.transform.rotate(car_scaled, -math.degrees(angle) - 90)
     car_rect = car_rot.get_rect(center=(x, y))
     car_mask = pygame.mask.from_surface(car_rot)
 
+    # checkpoint logic
+    finished_lap = False
+    cp_advanced = False
+    prev_cp = next_cp
+
     # checkpoints in order
     if timer_running and next_cp < len(checkpoints) and car_rect.colliderect(checkpoints[next_cp]):
         next_cp += 1
 
+    cp_advanced = (next_cp > prev_cp)
+
     # check for finish line crossing
     on_finish_line = finish_rect.colliderect(car_rect)
-    crossed_finish = (not was_on_finish) and on_finish_line
+    crossed_finish = (not was_on_finish) and on_finish_line # checks if the car just crossed the finish line
 
     if crossed_finish:
         if not timer_running:
@@ -211,9 +258,12 @@ while running:
             start_time = pygame.time.get_ticks()
             current_time = 0
             next_cp = 0
+
         else:
             # FINISH lap only if all checkpoints hit
             if next_cp == len(checkpoints):
+                finished_lap = True # for reward logic
+
                 last_lap = current_time
                 if best_lap is None or last_lap < best_lap:
                     best_lap = last_lap
@@ -223,14 +273,15 @@ while running:
                 current_time = 0
                 next_cp = 0
             else:
-                # crossed finish too early (optional: invalidate or ignore)
+                # crossed finish too early
                 pass
 
     was_on_finish = on_finish_line
 
-    # if there is overlap between car and track border, slow car and reset position
-    mask_offset = (car_rect.left - track_border_rect.left, car_rect.top - track_border_rect.top)
+    # if there is overlap between car and track border, reset position
+    mask_offset = (car_rect.left - track_border_rect.left, car_rect.top - track_border_rect.top) # 
     hit = border_mask.overlap(car_mask, mask_offset)
+    collided = (hit is not None)
 
     if hit:
         print("Collision detected!")
@@ -241,6 +292,7 @@ while running:
         current_time = 0
         was_on_finish = False
         next_cp = 0
+
 
     for i, cp in enumerate(checkpoints):
         if i < next_cp:
@@ -258,16 +310,27 @@ while running:
     obs, ray_distances, ray_hits, ray_start = get_observation(
         x, y, angle, speed,
         border_mask, track_border_rect,
-        ray_offsets,
+        ray_offsets_rad,
         front_offset=15,
         max_distance=150,
         step=4,
         max_speed=MAX_SPEED
     )
+    speed_norm = obs[7]  # 7 rays -> index 7 is speed_norm
+    reward = compute_reward(
+        speed_norm=speed_norm,
+        ray_distances=ray_distances,
+        max_distance=150,  # must match get_observation(max_distance=150)
+        cp_advanced=cp_advanced,
+        finished_lap=finished_lap,
+        collided=collided
+    )
+
     sx, sy = ray_start
     for hx, hy in ray_hits:
         pygame.draw.line(screen, (0, 200, 255), (sx, sy), (hx, hy), 2)
         pygame.draw.circle(screen, (255, 80, 80), (hx, hy), 3)
+
 
     # display timer
     seconds = current_time / 1000
@@ -289,6 +352,10 @@ while running:
 
     obs_text = font.render("Obs: " + " ".join(f"{v:.2f}" for v in obs[:7]), True, (255, 255, 255))
     screen.blit(obs_text, (20, 120))
+
+    reward_text = font.render(f"Reward: {reward:.3f}", True, (255, 255, 255))
+    screen.blit(reward_text, (20, 145))
+
     pygame.display.flip()
 
 pygame.quit()
