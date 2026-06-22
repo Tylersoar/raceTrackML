@@ -1,6 +1,8 @@
 import math
 import pygame
 from pygame.locals import *
+import numpy as np
+import pickle
 
 pygame.init()
 
@@ -196,6 +198,29 @@ def get_observation(
     obs = rays_norm + [speed_norm, math.sin(angle), math.cos(angle)]  # normalised values rays + speed + angle (radians)
 
     return obs, ray_distances, ray_hits, (sx, sy)  # return sensor start position
+
+# Discretizes the continuous observation for Q-learning
+def discretize_state(obs):
+    left_ray = obs[1]
+    center_ray = obs[3]
+    right_ray = obs[5]
+    speed = obs[7]
+
+    # 0 = Danger (Very close), 1 = Waring(Close), 2 = Safe(Far)
+    ray_buckets = [0.2, 0.6]
+
+    # np.digitize returns the bin values to see if the value falls into (0,1 or 2)
+    s_left = np.digitize(left_ray, ray_buckets)
+    s_right = np.digitize(right_ray, ray_buckets)
+    s_center = np.digitize(center_ray, ray_buckets)
+
+    # speed: 0 = Slow/reverse 1 = fast
+    s_speed = 1 if speed > 0 else 0
+
+    # returns a tuple that as a unique ID for the q table dictionary
+    # e.g, (0,2,2,1)  "Danger left, safe center, safe right, fast"
+    return s_left, s_center, s_right, s_speed
+
 
 
 def human_action(keys) -> int:
