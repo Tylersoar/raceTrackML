@@ -29,3 +29,20 @@ class QLearningAgent:
         max_q = np.max(q_values)
         best_actions = np.where(q_values == max_q)[0]
         return np.random.choice(best_actions)
+
+    def learn(self, state, action, reward, next_state):
+        # get current q value
+        q_values = self.get_q_values(state)
+        current_q = q_values[action]
+
+        # get max future Q-value
+        next_q_values = self.get_q_values(next_state)
+        max_next_q = np.max(next_q_values)
+
+        # Bellman Equation
+        new_q = current_q + self.alpha * (reward + self.gamma * max_next_q - current_q)
+        self.q_table[state][action] = new_q
+
+    def decay(self):
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
