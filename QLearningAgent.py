@@ -1,7 +1,7 @@
 import numpy as np
 
 class QLearningAgent:
-    def __init__(self, n_actions, gamma=0.1, alpha=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01):
+    def __init__(self, n_actions, gamma=0.95, alpha=0.5, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01):
         self.n_actions = n_actions
         self.gamma = gamma
         self.alpha = alpha
@@ -21,7 +21,7 @@ class QLearningAgent:
     def choose_action(self, state_key):
         # Exploration greedy
         if np.random.uniform(0,1) < self.epsilon:
-            return np.random.randint(0,self.n_actions-1)
+            return np.random.randint(0,self.n_actions)
 
         # gets the best known value (exploitation)
         q_values = self.get_q_values(state_key)
@@ -35,9 +35,12 @@ class QLearningAgent:
         q_values = self.get_q_values(state)
         current_q = q_values[action]
 
-        # get max future Q-value
-        next_q_values = self.get_q_values(next_state)
-        max_next_q = np.max(next_q_values)
+        # get max future Q-value (0 if terminal state)
+        if next_state is None:
+            max_next_q = 0
+        else:
+            next_q_values = self.get_q_values(next_state)
+            max_next_q = np.max(next_q_values)
 
         # Bellman Equation
         new_q = current_q + self.alpha * (reward + self.gamma * max_next_q - current_q)

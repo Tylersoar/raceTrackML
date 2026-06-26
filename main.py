@@ -17,7 +17,7 @@ font = pygame.font.SysFont(None, 24)
 
 # --- HYPERPARAMETERS ---
 N_AGENTS = 10  # Run 10 cars at once
-SWARM_DECAY = 0.9999  # Slower decay because 10 cars = 10x learning speed
+SWARM_DECAY = 0.998  # Slower decay because 10 cars = 10x learning speed
 
 
 # --- ASSETS ---
@@ -77,8 +77,8 @@ N_ACTIONS = len(ACTIONS)
 # Physics
 TURN_RATE = 4
 MAX_SPEED = 250
-ACCEL = 150
-FRICTION = 450
+ACCEL = 250
+FRICTION = 120
 RAY_OFFSETS = [-1.2, -1.0, -0.8, 0.0, 0.8, 1.0, 1.2]
 
 
@@ -130,12 +130,14 @@ def get_observation(x, y, angle, speed, border_mask, border_rect, offsets):
 
 
 def discretize_state(obs):
-    buckets = [0.2, 0.6]
-    s_left = np.digitize(obs[1], buckets)
+    buckets = [0.15, 0.35, 0.6]
+    s_left = np.digitize(obs[0], buckets)
+    s_fwd_left = np.digitize(obs[2], buckets)
     s_center = np.digitize(obs[3], buckets)
-    s_right = np.digitize(obs[5], buckets)
-    s_speed = 1 if obs[7] > 0.1 else 0
-    return (s_left, s_center, s_right, s_speed)
+    s_fwd_right = np.digitize(obs[4], buckets)
+    s_right = np.digitize(obs[6], buckets)
+    s_speed = np.digitize(obs[7], [-0.5, 0.1, 0.5, 0.8])
+    return s_left, s_fwd_left, s_center, s_fwd_right, s_right, s_speed
 
 
 def compute_reward(speed_norm, rays, collided, cp_advanced, finished_lap):
@@ -162,7 +164,8 @@ def step(state, action, dt):
             state["speed"] = min(0, state["speed"] + FRICTION * dt)
     state["speed"] = max(-MAX_SPEED, min(MAX_SPEED, state["speed"]))
 
-    steer_strength = min(1.0, abs(state["speed"]) / MAX_SPEED)
+    speed_ratio = abs(state["speed"]) / MAX_SPEED
+    steer_strength = max(0.35, min(1.0, speed_ratio))
     state["angle"] += steer * TURN_RATE * steer_strength * dt
     state["x"] += math.cos(state["angle"]) * state["speed"] * dt
     state["y"] += math.sin(state["angle"]) * state["speed"] * dt
@@ -248,8 +251,11 @@ while running:
         next_obs, reward, done, info = step(car, action, dt)
         next_key = discretize_state(next_obs)
 
-        # D. Learn (Shared Brain)
-        agent.learn(curr_key, action, reward, next_key)
+        # D. Learn (Shared Brain) — terminal state if crashed
+        if done:
+            agent.learn(curr_key, action, reward, None)  # No future reward on crash
+        else:
+            agent.learn(curr_key, action, reward, next_key)
 
         # E. Save Visuals
         car["info"] = info
