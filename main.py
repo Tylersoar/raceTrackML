@@ -1,4 +1,5 @@
 import math
+import random
 import pygame
 from pygame.locals import *
 import numpy as np
@@ -16,8 +17,8 @@ clock = pygame.time.Clock()
 font = pygame.font.SysFont(None, 24)
 
 # --- HYPERPARAMETERS ---
-N_AGENTS = 10  # Run 10 cars at once
-SWARM_DECAY = 0.998  # Slower decay because 10 cars = 10x learning speed
+N_AGENTS = 1  # Run 100 cars at once
+SWARM_DECAY = 0.995  # Decays per checkpoint hit: ~300 CPs (100 laps) → ε≈0.22
 
 
 # --- ASSETS ---
@@ -51,16 +52,33 @@ finish_rect = rotated_finish_line.get_rect(topleft=(570, 20))
 
 # Each checkpoint: collision_rect + 2 parallel line segments for drawing
 checkpoints = [
-    {  # CP 0 — right side vertical section
-        "rect": pygame.Rect(595, 170, 10, 120),
+    {  # CP 0 — right side horizontal section
+        "rect": pygame.Rect(790, 125, 85, 13),
+        "lines": [((796, 125), (865, 125)), ((796, 135), (865, 135))]
+    },
+
+    {  # CP 1 — right side vertical section
+        "rect": pygame.Rect(585, 220, 15, 80),
         "lines": [((585, 223), (585, 292)), ((595, 223), (595, 292))]
     },
-    {  # CP 1 — bottom horizontal section
-        "rect": pygame.Rect(420, 585, 160, 10),
+    {  # CP 2 — right side vertical section
+        "rect": pygame.Rect(585, 320, 15, 80),
+        "lines": [((585, 325), (585, 395)), ((595, 325), (595, 395))]
+    },
+    {  # CP 3 — bottom horizontal section
+        "rect": pygame.Rect(460, 575, 80, 15),
         "lines": [((468, 575), (535, 575)), ((468, 585), (535, 585))]
     },
-    {  # CP 2 — left side horizontal section
-        "rect": pygame.Rect(230, 235, 140, 10),
+    {  # CP 4 — bottom horizontal section
+        "rect": pygame.Rect(655, 575, 80, 15),
+        "lines": [((658, 575), (728, 575)), ((658, 585), (728, 585))]
+    },
+    {  # CP 5 — left side horizontal section
+        "rect": pygame.Rect(120, 225, 80, 10),
+        "lines": [((125, 225), (195, 225)), ((125, 235), (195, 235))]
+    },
+    {  # CP 6 — left side horizontal section
+        "rect": pygame.Rect(240, 225, 80, 10),
         "lines": [((240, 225), (310, 225)), ((240, 235), (310, 235))]
     },
 ]
@@ -85,13 +103,13 @@ RAY_OFFSETS = [-1.2, -1.0, -0.8, 0.0, 0.8, 1.0, 1.2]
 # --- HELPER FUNCTIONS ---
 
 def create_new_state(index=0):
-    """Generates a fresh car state with slight jitter to separate them."""
+    """Generates a fresh car state with random jitter to increase swarm diversity."""
     return {
         "id": index,
-        "x": START_X + (index * 2),  # Jitter start pos
-        "y": START_Y + (index * 2),
+        "x": START_X + random.uniform(-15, 15),
+        "y": START_Y + random.uniform(-10, 10),
         "speed": 0.0,
-        "angle": START_ANGLE,
+        "angle": START_ANGLE + random.uniform(-0.3, 0.3),
         "timer_running": False,
         "start_time": 0,
         "current_time": 0,
@@ -131,13 +149,15 @@ def get_observation(x, y, angle, speed, border_mask, border_rect, offsets):
 
 def discretize_state(obs):
     buckets = [0.15, 0.35, 0.6]
-    s_left = np.digitize(obs[0], buckets)
+    s_far_left = np.digitize(obs[0], buckets)
+    s_left = np.digitize(obs[1], buckets)
     s_fwd_left = np.digitize(obs[2], buckets)
     s_center = np.digitize(obs[3], buckets)
     s_fwd_right = np.digitize(obs[4], buckets)
-    s_right = np.digitize(obs[6], buckets)
+    s_right = np.digitize(obs[5], buckets)
+    s_far_right = np.digitize(obs[6], buckets)
     s_speed = np.digitize(obs[7], [-0.5, 0.1, 0.5, 0.8])
-    return s_left, s_fwd_left, s_center, s_fwd_right, s_right, s_speed
+    return s_far_left, s_left, s_fwd_left, s_center, s_fwd_right, s_right, s_far_right, s_speed
 
 
 def compute_reward(speed_norm, rays, collided, cp_advanced, finished_lap):
@@ -212,7 +232,8 @@ def step(state, action, dt):
         "hits": hits,
         "ray_start": ray_start,
         "reward": reward,
-        "finished_lap": finished_lap
+        "finished_lap": finished_lap,
+        "cp_advanced": cp_advanced  # Expose for epsilon decay
     }
 
     return obs, reward, collided, info
@@ -268,10 +289,11 @@ while running:
 
             # Reset ONLY this car
             cars[i] = create_new_state(i)
-
-            # Decay Epsilon (One step per crash/finish)
-            agent.decay()
             episode_total += 1
+
+        # Decay epsilon on checkpoint progress (not crashes)
+        if info.get("cp_advanced"):
+            agent.decay()
 
     # Update leader checkpoint crossings (visual highlight)
     leader_rect = cars[0]["info"]["car_rect"] if cars[0]["info"] else None
