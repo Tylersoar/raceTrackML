@@ -1,7 +1,7 @@
 import numpy as np
 
 class QLearningAgent:
-    def __init__(self, n_actions, gamma, alpha, epsilon, epsilon_decay, epsilon_min):
+    def __init__(self, n_actions, gamma=0.1, alpha=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01):
         self.n_actions = n_actions
         self.gamma = gamma
         self.alpha = alpha
@@ -11,7 +11,7 @@ class QLearningAgent:
 
         # a dictionary that maps tuples -> action values
         # if a state is new 0s are returned
-        self.q_table = []
+        self.q_table = {}
 
     def get_q_values(self, state_key):
         if state_key not in self.q_table:
@@ -20,8 +20,8 @@ class QLearningAgent:
 
     def choose_action(self, state_key):
         # Exploration greedy
-        if np.random.random() < self.epsilon:
-            return np.random.randint(0,self.n_actions)
+        if np.random.uniform(0,1) < self.epsilon:
+            return np.random.randint(0,self.n_actions-1)
 
         # gets the best known value (exploitation)
         q_values = self.get_q_values(state_key)
