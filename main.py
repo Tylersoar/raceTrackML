@@ -156,24 +156,24 @@ def discretize_state(obs):
     s_fwd_right = np.digitize(obs[4], buckets)
     s_right = np.digitize(obs[5], buckets)
     s_far_right = np.digitize(obs[6], buckets)
-    s_speed = np.digitize(obs[7], [-0.5, 0.1, 0.5, 0.8])
+    s_speed = np.digitize(obs[7], [0.0, 0.05, 0.2, 0.5, 0.8])
     return s_far_left, s_left, s_fwd_left, s_center, s_fwd_right, s_right, s_far_right, s_speed
 
 
 def compute_reward(speed_norm, rays, collided, cp_advanced, finished_lap):
-    reward = -0.1  # Living penalty
-    if collided: return -100
-    if finished_lap: return 100
-    if cp_advanced: return 20
+    reward = -0.005  # Living penalty
+    if collided: reward -= 50
+    if finished_lap: reward += 100
+    if cp_advanced: reward += 20
 
-    reward += speed_norm * 0.2
+    reward += speed_norm * 0.4
     min_ray = min(rays) / 150.0
     if min_ray < 0.2: reward -= 0.5
     return reward
 
 
 def step(state, action, dt):
-    # Physics
+    # --- Physics (unchanged) ---
     steer, throttle = ACTIONS[action]
     if throttle != 0.0:
         state["speed"] += throttle * ACCEL * dt
@@ -193,7 +193,7 @@ def step(state, action, dt):
     if state["timer_running"]:
         state["current_time"] = pygame.time.get_ticks() - state["start_time"]
 
-    # Collision & Logic
+    # --- Collision & Logic ---
     car_rot = pygame.transform.rotate(car_scaled, -math.degrees(state["angle"]) - 90)
     car_rect = car_rot.get_rect(center=(state["x"], state["y"]))
     car_mask = pygame.mask.from_surface(car_rot)
@@ -221,10 +221,26 @@ def step(state, action, dt):
             state["next_cp"] = 0
     state["was_on_finish"] = on_finish
 
-    # Observe (for returning info)
-    obs, rays, hits, ray_start = get_observation(state["x"], state["y"], state["angle"], state["speed"], border_mask,
-                                                 track_border_rect, RAY_OFFSETS)
-    reward = compute_reward(obs[7], rays, collided, cp_advanced, finished_lap)
+    # --- Progress Reward (distance to next checkpoint) ---
+    progress_reward = 0.0
+    if state["next_cp"] < len(checkpoints) and not collided:
+        cp_center = checkpoints[state["next_cp"]]["rect"].center
+        dx = cp_center[0] - state["x"]
+        dy = cp_center[1] - state["y"]
+        dist = math.hypot(dx, dy)
+        if dist > 0:
+            # velocity vector
+            vx = math.cos(state["angle"]) * state["speed"]
+            vy = math.sin(state["angle"]) * state["speed"]
+            proj = (vx * dx + vy * dy) / dist
+        # Reward getting closer; max shaping reward ~2.0 when very close, decays quickly beyond 200px
+            progress_reward = max(0, proj) * 0.05
+
+    # --- Original Reward (with progress shaping added) ---
+    obs, rays, hits, ray_start = get_observation(state["x"], state["y"], state["angle"], state["speed"],
+                                                 border_mask, track_border_rect, RAY_OFFSETS)
+    base_reward = compute_reward(obs[7], rays, collided, cp_advanced, finished_lap)
+    reward = base_reward + progress_reward
 
     info = {
         "car_rot": car_rot,
@@ -233,7 +249,7 @@ def step(state, action, dt):
         "ray_start": ray_start,
         "reward": reward,
         "finished_lap": finished_lap,
-        "cp_advanced": cp_advanced  # Expose for epsilon decay
+        "cp_advanced": cp_advanced
     }
 
     return obs, reward, collided, info
@@ -260,6 +276,17 @@ while running:
 
     # --- UPDATE SWARM ---
     for i, car in enumerate(cars):
+        car.setdefault("stuck_counter", 0)
+        if car["next_cp"] == 0:
+            car["stuck_counter"] += 1
+            if car["stuck_counter"] > 300:
+                cars[i] = create_new_state(i)
+                episode_total += 1
+                agent.decay()
+                agent.decay_alpha()
+                continue
+        else:
+            car["stuck_counter"] = 0
         # A. Observe
         obs, rays, hits, ray_start = get_observation(car["x"], car["y"], car["angle"], car["speed"], border_mask,
                                                      track_border_rect, RAY_OFFSETS)
@@ -275,25 +302,27 @@ while running:
         # D. Learn (Shared Brain) — terminal state if crashed
         if done:
             agent.learn(curr_key, action, reward, None)  # No future reward on crash
+            agent.decay()
         else:
             agent.learn(curr_key, action, reward, next_key)
+
+        # # Decay epsilon on checkpoint progress (not crashes)
+        if info.get("cp_advanced"):
+            agent.decay()
+            agent.decay_alpha()
 
         # E. Save Visuals
         car["info"] = info
         car["action"] = action  # Save for UI display
 
-        # F. Reset if Done
         if done or info["finished_lap"]:
             if info["finished_lap"]:
                 print(f"!!! Car {i} FINISHED LAP !!!")
-
-            # Reset ONLY this car
             cars[i] = create_new_state(i)
             episode_total += 1
-
-        # Decay epsilon on checkpoint progress (not crashes)
-        if info.get("cp_advanced"):
             agent.decay()
+            agent.decay_alpha()
+
 
     # Update leader checkpoint crossings (visual highlight)
     leader_rect = cars[0]["info"]["car_rect"] if cars[0]["info"] else None
