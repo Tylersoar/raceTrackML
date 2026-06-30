@@ -18,7 +18,7 @@ font = pygame.font.SysFont(None, 24)
 
 # --- HYPERPARAMETERS ---
 N_AGENTS = 100  # Run 100 cars at once
-SWARM_DECAY = 0.995  # Decays per checkpoint hit: ~300 CPs (100 laps) → ε≈0.22
+SWARM_DECAY = 0.9999  # Decays per checkpoint hit: ~300 CPs (100 laps) → ε≈0.22
 
 
 # --- ASSETS ---
@@ -97,7 +97,7 @@ TURN_RATE = 4
 MAX_SPEED = 250
 ACCEL = 250
 FRICTION = 120
-RAY_OFFSETS = [-1.2, -1.0, -0.8, 0.0, 0.8, 1.0, 1.2]
+RAY_OFFSETS = [-1.2, -0.8, -0.4, 0.0, 0.4, 0.8, 1.2]
 
 
 # --- HELPER FUNCTIONS ---
@@ -129,7 +129,7 @@ def get_observation(x, y, angle, speed, border_mask, border_rect, offsets):
     for off in offsets:
         ray_angle = angle + off
         dx, dy = math.cos(ray_angle), math.sin(ray_angle)
-        hit_dist = 150
+        hit_dist = 250
 
         for d in range(0, 151, 4):
             px = int(sx + dx * d - border_rect.left)
@@ -156,17 +156,17 @@ def discretize_state(obs):
     s_fwd_right = np.digitize(obs[4], buckets)
     s_right = np.digitize(obs[5], buckets)
     s_far_right = np.digitize(obs[6], buckets)
-    s_speed = np.digitize(obs[7], [0.0, 0.05, 0.2, 0.5, 0.8])
+    s_speed = np.digitize(obs[7], [0.2, 0.4, 0.6, 0.8])
     return s_far_left, s_left, s_fwd_left, s_center, s_fwd_right, s_right, s_far_right, s_speed
 
 
 def compute_reward(speed_norm, rays, collided, cp_advanced, finished_lap):
     reward = -0.005  # Living penalty
-    if collided: reward -= 50
+    if collided: reward -= 100
     if finished_lap: reward += 100
     if cp_advanced: reward += 20
 
-    reward += speed_norm * 0.4
+    #reward += speed_norm * 0.4
     min_ray = min(rays) / 150.0
     if min_ray < 0.2: reward -= 0.5
     return reward
@@ -185,7 +185,7 @@ def step(state, action, dt):
     state["speed"] = max(-MAX_SPEED, min(MAX_SPEED, state["speed"]))
 
     speed_ratio = abs(state["speed"]) / MAX_SPEED
-    steer_strength = max(0.35, min(1.0, speed_ratio))
+    steer_strength = max(0.7, min(1.0, speed_ratio))
     state["angle"] += steer * TURN_RATE * steer_strength * dt
     state["x"] += math.cos(state["angle"]) * state["speed"] * dt
     state["y"] += math.sin(state["angle"]) * state["speed"] * dt
