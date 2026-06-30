@@ -1,28 +1,27 @@
 import math
+import random
 import pygame
 from pygame.locals import *
 import numpy as np
-import pickle
+
+# IMPORT THE SHARED BRAIN
+from QLearningAgent import QLearningAgent
 
 pygame.init()
 
-# Sets window size
+# --- CONFIGURATION ---
 WIDTH, HEIGHT = 1000, 800
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Race Track ML - stage 0")
-
-# Sets frame rate
+pygame.display.set_caption("Race Track ML - Swarm Training (10 Agents)")
 clock = pygame.time.Clock()
-# for displaying the timer
 font = pygame.font.SysFont(None, 24)
 
-
-def fmt(ms):
-    if ms is None:
-        return "--"
-    return f"{ms / 1000:.2f}s"
+# --- HYPERPARAMETERS ---
+N_AGENTS = 1  # Run 100 cars at once
+SWARM_DECAY = 0.995  # Decays per checkpoint hit: ~300 CPs (100 laps) → ε≈0.22
 
 
+# --- ASSETS ---
 def scale_to_fit(img: pygame.Surface, max_w: int, max_h: int) -> pygame.Surface:
     iw, ih = img.get_size()
     scale = min(max_w / iw, max_h / ih)
@@ -30,423 +29,324 @@ def scale_to_fit(img: pygame.Surface, max_w: int, max_h: int) -> pygame.Surface:
     return pygame.transform.smoothscale(img, new_size)
 
 
-# Load and rotate finish line image
-finish_line = pygame.image.load('res/finish.png').convert_alpha()
-rotated_finish_line = pygame.transform.rotate(finish_line, 90)
+try:
+    finish_line = pygame.image.load('res/finish.png').convert_alpha()
+    rotated_finish_line = pygame.transform.rotate(finish_line, 90)
+    track = pygame.image.load('res/track.png')
+    track_scaled = scale_to_fit(track, WIDTH, HEIGHT)
+    track_border = pygame.image.load('res/track-border.png').convert_alpha()
+    track_border_scaled = scale_to_fit(track_border, WIDTH, HEIGHT)
 
-# Define checkpoints for lap timing (not implemented yet)
-checkpoints = [
-    pygame.Rect(600, 220, 40, 100),  # checkpoint 1
-    pygame.Rect(450, 570, 100, 40),  # checkpoint 2
-    pygame.Rect(230, 220, 100, 40)  # checkpoint 3
-]
+    car_img = pygame.image.load('res/green-car.png')
+    car_scaled = pygame.transform.scale_by(car_img, 0.3)
 
-# Load track image and scale to fit window
-track = pygame.image.load('res/track.png')
-track_scaled = scale_to_fit(track, WIDTH, HEIGHT)
+except FileNotFoundError:
+    print("ERROR: Assets not found! Ensure 'res/' folder exists.")
+    exit()
+
+# Geometry
 track_rect = track_scaled.get_rect(center=(WIDTH // 2, HEIGHT // 2))
-
-# Position finish line
-finish_rect = rotated_finish_line.get_rect(topleft=(570, 20))
-
-# Load track border image
-track_border = pygame.image.load('res/track-border.png').convert_alpha()
-track_border_scaled = scale_to_fit(track_border, WIDTH, HEIGHT)
 track_border_rect = track_border_scaled.get_rect(center=(WIDTH // 2, HEIGHT // 2))
 border_mask = pygame.mask.from_surface(track_border_scaled)
+finish_rect = rotated_finish_line.get_rect(topleft=(570, 20))
 
-# Load car image and scale it down
-car_img = pygame.image.load('res/green-car.png')
-car_scaled = pygame.transform.scale_by(car_img, 0.3)
+# Each checkpoint: collision_rect + 2 parallel line segments for drawing
+checkpoints = [
+    {  # CP 0 — right side horizontal section
+        "rect": pygame.Rect(790, 125, 85, 13),
+        "lines": [((796, 125), (865, 125)), ((796, 135), (865, 135))]
+    },
+
+    {  # CP 1 — right side vertical section
+        "rect": pygame.Rect(585, 220, 15, 80),
+        "lines": [((585, 223), (585, 292)), ((595, 223), (595, 292))]
+    },
+    {  # CP 2 — right side vertical section
+        "rect": pygame.Rect(585, 320, 15, 80),
+        "lines": [((585, 325), (585, 395)), ((595, 325), (595, 395))]
+    },
+    {  # CP 3 — bottom horizontal section
+        "rect": pygame.Rect(460, 575, 80, 15),
+        "lines": [((468, 575), (535, 575)), ((468, 585), (535, 585))]
+    },
+    {  # CP 4 — bottom horizontal section
+        "rect": pygame.Rect(655, 575, 80, 15),
+        "lines": [((658, 575), (728, 575)), ((658, 585), (728, 585))]
+    },
+    {  # CP 5 — left side horizontal section
+        "rect": pygame.Rect(120, 225, 80, 10),
+        "lines": [((125, 225), (195, 225)), ((125, 235), (195, 235))]
+    },
+    {  # CP 6 — left side horizontal section
+        "rect": pygame.Rect(240, 225, 80, 10),
+        "lines": [((240, 225), (310, 225)), ((240, 235), (310, 235))]
+    },
+]
 
 START_X, START_Y = 550, 80
 START_ANGLE = 0.0
 
-state = {
-    "x": START_X,
-    "y": START_Y,
-    "speed": 0.0,
-    "angle": START_ANGLE,
-
-    "timer_running": False,
-    "start_time": 0,
-    "current_time": 0,
-
-    "next_cp": 0,
-    "was_on_finish": False,
-
-    "best_lap": None,
-    "last_lap": None,
-}
-
-# Actions for Discrete ML controls
-# Action_id maps to (steering, throttle)
 ACTIONS = {
-    0: (0.0, 0.0),  # coast
-    1: (0.0, 1.0),  # accelerate
-    2: (0.0, -1.0),  # brake
-    3: (-1.0, 1.0),  # left + accelerate
-    4: (1.0, 1.0),  # right + accelerate
-    5: (-1.0, 0.0),  # left
-    6: (1.0, 0.0)  # right
+    0: (0.0, 0.0), 1: (0.0, 1.0), 2: (0.0, -1.0),
+    3: (-1.0, 1.0), 4: (1.0, 1.0), 5: (-1.0, 0.0), 6: (1.0, 0.0)
 }
+N_ACTIONS = len(ACTIONS)
 
-N_ACTIONS = len(ACTIONS)  # number of actions
-
-# Car constants
-TURN_RATE = 4  #
+# Physics
+TURN_RATE = 4
 MAX_SPEED = 250
-ACCEL = 150
-FRICTION = 450
-
-ray_offsets_rad = [-1.2, -1.0, -0.8, 0.0, 0.8, 1.0, 1.2]  # ray angles relative to car angle
-
-
-def compute_reward(
-        speed_norm: float,
-        ray_distances: list[int],
-        max_distance: int,
-        cp_advanced: bool,
-        finished_lap: bool,
-        collided: bool,
-        n_checkpoints: int,
-        next_cp: int
-) -> float:
-    SPEED_REWARD_SCALE = 0.05
-    WALL_PENALTY_SCALE = 0.03
-    CP_REWARD = 1.0
-    LAP_REWARD = 10.0
-    CRASH_PENALTY = 10.0
-    PROGRESS_REWARD = 0.1
-    reward = 0.0
-
-    reward += max(0.0, speed_norm) * SPEED_REWARD_SCALE  # reward for moving forward
-
-    # wall proximity penality (encourage staying centered)
-    min_ray = min(ray_distances)  # minimum ray distance - closest to the wall
-    closeness = 1.0 - (min_ray / max_distance)
-    reward -= closeness * WALL_PENALTY_SCALE
-
-    progress = next_cp / n_checkpoints
-    reward += progress * PROGRESS_REWARD
-
-    # crossing checkpoints and finishing lap and collisions
-    if cp_advanced:
-        reward += CP_REWARD
-    if finished_lap:
-        reward += LAP_REWARD
-    if collided:
-        reward -= CRASH_PENALTY
-
-    return reward
+ACCEL = 250
+FRICTION = 120
+RAY_OFFSETS = [-1.2, -1.0, -0.8, 0.0, 0.8, 1.0, 1.2]
 
 
-def get_observation(
-        x, y, angle, speed,
-        border_mask, border_rect,
-        offsets,
-        front_offset=15,
-        max_distance=150,
-        step=4,
-        max_speed=250
-):
-    # start from the nose of the car (screen coords)
-    sx = x + math.cos(angle) * front_offset
-    sy = y + math.sin(angle) * front_offset
+# --- HELPER FUNCTIONS ---
 
+def create_new_state(index=0):
+    """Generates a fresh car state with random jitter to increase swarm diversity."""
+    return {
+        "id": index,
+        "x": START_X + random.uniform(-15, 15),
+        "y": START_Y + random.uniform(-10, 10),
+        "speed": 0.0,
+        "angle": START_ANGLE + random.uniform(-0.3, 0.3),
+        "timer_running": False,
+        "start_time": 0,
+        "current_time": 0,
+        "next_cp": 0,
+        "was_on_finish": False,
+        "info": None  # Will store visual data
+    }
+
+
+def get_observation(x, y, angle, speed, border_mask, border_rect, offsets):
+    sx = x + math.cos(angle) * 15
+    sy = y + math.sin(angle) * 15
     w, h = border_mask.get_size()
-
     ray_distances = []
     ray_hits = []
 
     for off in offsets:
         ray_angle = angle + off
-        dx = math.cos(ray_angle)  # ray direction vector
-        dy = math.sin(ray_angle)  # ray direction vector
+        dx, dy = math.cos(ray_angle), math.sin(ray_angle)
+        hit_dist = 150
 
-        hit_dist = max_distance
-
-        for d in range(0, max_distance + 1, step):
-            px = sx + dx * d
-            py = sy + dy * d
-
-            mx = int(px - border_rect.left)
-            my = int(py - border_rect.top)
-
-            # out of bounds counts as hit
-            if mx < 0 or my < 0 or mx >= w or my >= h:
+        for d in range(0, 151, 4):
+            px = int(sx + dx * d - border_rect.left)
+            py = int(sy + dy * d - border_rect.top)
+            if px < 0 or py < 0 or px >= w or py >= h or border_mask.get_at((px, py)):
                 hit_dist = d
                 break
 
-            if border_mask.get_at((mx, my)):
-                hit_dist = d
-                break
+        ray_distances.append(hit_dist)
+        ray_hits.append((int(sx + dx * hit_dist), int(sy + dy * hit_dist)))
 
-        hit_x = int(sx + dx * hit_dist)
-        hit_y = int(sy + dy * hit_dist)
+    rays_norm = [d / 150 for d in ray_distances]
+    speed_norm = max(-1.0, min(1.0, speed / MAX_SPEED))
+    obs = rays_norm + [speed_norm]
+    return obs, ray_distances, ray_hits, (sx, sy)
 
-        ray_distances.append(hit_dist)  # distance to hit in pixels
-        ray_hits.append((hit_x, hit_y))  # hit position in screen coords
 
-    # normalize rays to [0,1] from pixels
-    rays_norm = [d / max_distance for d in ray_distances]
-
-    # normalize speed to [-1,1]
-    speed_norm = max(-1.0, min(1.0, speed / max_speed))
-
-    # observation vector (ML-friendly)
-    obs = rays_norm + [speed_norm, math.sin(angle), math.cos(angle)]  # normalised values rays + speed + angle (radians)
-
-    return obs, ray_distances, ray_hits, (sx, sy)  # return sensor start position
-
-# Discretizes the continuous observation for Q-learning
 def discretize_state(obs):
-    left_ray = obs[1]
-    center_ray = obs[3]
-    right_ray = obs[5]
-    speed = obs[7]
-
-    # 0 = Danger (Very close), 1 = Waring(Close), 2 = Safe(Far)
-    ray_buckets = [0.2, 0.6]
-
-    # np.digitize returns the bin values to see if the value falls into (0,1 or 2)
-    s_left = np.digitize(left_ray, ray_buckets)
-    s_right = np.digitize(right_ray, ray_buckets)
-    s_center = np.digitize(center_ray, ray_buckets)
-
-    # speed: 0 = Slow/reverse 1 = fast
-    s_speed = 1 if speed > 0 else 0
-
-    # returns a tuple that as a unique ID for the q table dictionary
-    # e.g, (0,2,2,1)  "Danger left, safe center, safe right, fast"
-    return s_left, s_center, s_right, s_speed
+    buckets = [0.15, 0.35, 0.6]
+    s_far_left = np.digitize(obs[0], buckets)
+    s_left = np.digitize(obs[1], buckets)
+    s_fwd_left = np.digitize(obs[2], buckets)
+    s_center = np.digitize(obs[3], buckets)
+    s_fwd_right = np.digitize(obs[4], buckets)
+    s_right = np.digitize(obs[5], buckets)
+    s_far_right = np.digitize(obs[6], buckets)
+    s_speed = np.digitize(obs[7], [-0.5, 0.1, 0.5, 0.8])
+    return s_far_left, s_left, s_fwd_left, s_center, s_fwd_right, s_right, s_far_right, s_speed
 
 
+def compute_reward(speed_norm, rays, collided, cp_advanced, finished_lap):
+    reward = -0.1  # Living penalty
+    if collided: return -100
+    if finished_lap: return 100
+    if cp_advanced: return 20
 
-def human_action(keys) -> int:
-    up = keys[K_UP] or keys[K_w]
-    down = keys[K_DOWN] or keys[K_s]
-    left = keys[K_LEFT] or keys[K_a]
-    right = keys[K_RIGHT] or keys[K_d]
-
-    if up and left:
-        return 3
-    if up and right:
-        return 4
-    if up:
-        return 1
-    if down:
-        return 2
-    if left:
-        return 5
-    if right:
-        return 6
-    return 0
-
-
-def reset(state):
-    state["x"] = START_X
-    state["y"] = START_Y
-    state["speed"] = 0.0
-    state["angle"] = START_ANGLE
-
-    state["timer_running"] = False
-    state["start_time"] = 0
-    state["current_time"] = 0
-
-    state["next_cp"] = 0
-    state["was_on_finish"] = False
-
-    state["last_lap"] = None
-
-    obs, *_ = get_observation(
-        state["x"], state["y"], state["angle"], state["speed"],
-        border_mask, track_border_rect,
-        ray_offsets_rad,
-        front_offset=15,
-        max_distance=150,
-        step=4,
-        max_speed=MAX_SPEED
-    )
-    return obs
+    reward += speed_norm * 0.2
+    min_ray = min(rays) / 150.0
+    if min_ray < 0.2: reward -= 0.5
+    return reward
 
 
 def step(state, action, dt):
-    # discrete actions
+    # Physics
     steer, throttle = ACTIONS[action]
-
-    # speed physics
-    speed = state["speed"]
     if throttle != 0.0:
-        speed += throttle * ACCEL * dt
-
+        state["speed"] += throttle * ACCEL * dt
     else:
-        if speed > 0:
-            speed = max(0, speed - FRICTION * dt)
-        elif speed < 0:
-            speed = min(0, speed + FRICTION * dt)
-    speed = max(-MAX_SPEED, min(MAX_SPEED, speed))
+        if state["speed"] > 0:
+            state["speed"] = max(0, state["speed"] - FRICTION * dt)
+        elif state["speed"] < 0:
+            state["speed"] = min(0, state["speed"] + FRICTION * dt)
+    state["speed"] = max(-MAX_SPEED, min(MAX_SPEED, state["speed"]))
 
-    # angle physics
-    angle = state["angle"]
-    steer_strength = min(1.0, abs(speed) / MAX_SPEED)
-    angle += steer * TURN_RATE * steer_strength * dt
+    speed_ratio = abs(state["speed"]) / MAX_SPEED
+    steer_strength = max(0.35, min(1.0, speed_ratio))
+    state["angle"] += steer * TURN_RATE * steer_strength * dt
+    state["x"] += math.cos(state["angle"]) * state["speed"] * dt
+    state["y"] += math.sin(state["angle"]) * state["speed"] * dt
 
-    # movement
-    x = state["x"] + math.cos(angle) * speed * dt
-    y = state["y"] + math.sin(angle) * speed * dt
-
-    # update timer
     if state["timer_running"]:
         state["current_time"] = pygame.time.get_ticks() - state["start_time"]
 
-    # build car mask/rect for collisions and checkpoints
-    car_rot = pygame.transform.rotate(car_scaled, -math.degrees(angle) - 90)
-    car_rect = car_rot.get_rect(center=(x, y))
+    # Collision & Logic
+    car_rot = pygame.transform.rotate(car_scaled, -math.degrees(state["angle"]) - 90)
+    car_rect = car_rot.get_rect(center=(state["x"], state["y"]))
     car_mask = pygame.mask.from_surface(car_rot)
 
-    # checkpoints
-    finished_lap = False
+    # Wall Collision
+    offset = (int(car_rect.left - track_border_rect.left), int(car_rect.top - track_border_rect.top))
+    collided = border_mask.overlap(car_mask, offset) is not None
+
+    # Checkpoints
     prev_cp = state["next_cp"]
-
-    # checkpoints in order
-    if state["next_cp"] < len(checkpoints) and car_rect.colliderect(
-            checkpoints[state["next_cp"]]):
+    if state["next_cp"] < len(checkpoints) and car_rect.colliderect(checkpoints[state["next_cp"]]["rect"]):
         state["next_cp"] += 1
-
     cp_advanced = state["next_cp"] > prev_cp
 
-    on_finish_line = finish_rect.colliderect(car_rect)
-    crossed_finish = (not state["was_on_finish"]) and on_finish_line  # checks if the car just crossed the finish line
-
-    if crossed_finish:
+    # Finish Line
+    on_finish = finish_rect.colliderect(car_rect)
+    finished_lap = False
+    if on_finish and not state["was_on_finish"]:
         if not state["timer_running"]:
-            # START a new lap
             state["timer_running"] = True
             state["start_time"] = pygame.time.get_ticks()
-            state["current_time"] = 0
+        elif state["next_cp"] == len(checkpoints):
+            finished_lap = True
+            state["start_time"] = pygame.time.get_ticks()
             state["next_cp"] = 0
-        else:
-            # FINISH lap only if all checkpoints hit
-            if state["next_cp"] == len(checkpoints):
-                finished_lap = True  # for reward logic
-                state["last_lap"] = state["current_time"]
-                if state["best_lap"] is None or state["last_lap"] < state["best_lap"]:
-                    state["best_lap"] = state["last_lap"]
+    state["was_on_finish"] = on_finish
 
-                # IMMEDIATELY start next lap from 0 (normal racing)
-                state["start_time"] = pygame.time.get_ticks()
-                state["current_time"] = 0
-                state["next_cp"] = 0
-
-    state["was_on_finish"] = on_finish_line
-
-    # collisions
-    mask_offset = (car_rect.left - track_border_rect.left, car_rect.top - track_border_rect.top)  #
-    hit = border_mask.overlap(car_mask, mask_offset)
-    collided = hit is not None
-
-    # draw sensor rays
-    obs, ray_distances, ray_hits, ray_start = get_observation(
-        x, y, angle, speed,
-        border_mask, track_border_rect,
-        ray_offsets_rad,
-        front_offset=15,
-        max_distance=150,
-        step=4,
-        max_speed=MAX_SPEED
-    )
-    speed_norm = obs[7]  # 7 rays -> index 7 is speed_norm
-    reward = compute_reward(
-        speed_norm=speed_norm,
-        ray_distances=ray_distances,
-        max_distance=150,  # must match get_observation(max_distance=150)
-        cp_advanced=cp_advanced,
-        finished_lap=finished_lap,
-        collided=collided,
-        n_checkpoints=len(checkpoints),
-        next_cp=state["next_cp"]
-    )
-
-    done = collided
-    state["x"], state["y"], state["speed"], state["angle"] = x, y, speed, angle
+    # Observe (for returning info)
+    obs, rays, hits, ray_start = get_observation(state["x"], state["y"], state["angle"], state["speed"], border_mask,
+                                                 track_border_rect, RAY_OFFSETS)
+    reward = compute_reward(obs[7], rays, collided, cp_advanced, finished_lap)
 
     info = {
-        "collided": collided,
-        "finished_lap": finished_lap,
-        "cp": state["next_cp"],
-        "ray_distances": ray_distances,
-        "ray_hits": ray_hits,
-        "ray_start": ray_start,
         "car_rot": car_rot,
         "car_rect": car_rect,
+        "hits": hits,
+        "ray_start": ray_start,
+        "reward": reward,
+        "finished_lap": finished_lap,
+        "cp_advanced": cp_advanced  # Expose for epsilon decay
     }
 
-    return obs, reward, done, info
+    return obs, reward, collided, info
 
+
+# --- INITIALIZATION ---
+
+# 1. Initialize Shared Brain
+agent = QLearningAgent(n_actions=N_ACTIONS, epsilon_decay=SWARM_DECAY)
+
+# 2. Initialize Swarm
+cars = [create_new_state(i) for i in range(N_AGENTS)]
 
 running = True
+episode_total = 0
+leader_crossed_cps = set()  # Track which checkpoints the leader has crossed (visual highlight)
+
 while running:
-    dt = clock.tick(60) / 1000  # Delta time in seconds
+    dt = clock.tick(60) / 1000.0
 
     for event in pygame.event.get():
-        if event.type == pygame.QUIT:
+        if event.type == QUIT:
             running = False
 
-    keys = pygame.key.get_pressed()
-    action = human_action(keys)  # move car based on key presses
+    # --- UPDATE SWARM ---
+    for i, car in enumerate(cars):
+        # A. Observe
+        obs, rays, hits, ray_start = get_observation(car["x"], car["y"], car["angle"], car["speed"], border_mask,
+                                                     track_border_rect, RAY_OFFSETS)
+        curr_key = discretize_state(obs)
 
-    obs, reward, done, info = step(state, action, dt)
+        # B. Decide (Shared Brain)
+        action = agent.choose_action(curr_key)
 
-    screen.fill((25, 25, 25))  # Fill the screen with black
-    screen.blit(track_scaled, track_rect)  # Draw the track
-    screen.blit(rotated_finish_line, (570, 20))  # Draw the finish line
+        # C. Act (Physics)
+        next_obs, reward, done, info = step(car, action, dt)
+        next_key = discretize_state(next_obs)
 
-    for i, cp in enumerate(checkpoints):
-        if i < state["next_cp"]:
-            color = (0, 255, 0)  # green for passed checkpoints
+        # D. Learn (Shared Brain) — terminal state if crashed
+        if done:
+            agent.learn(curr_key, action, reward, None)  # No future reward on crash
         else:
-            color = (255, 255, 0)  # yellow for upcoming checkpoints
+            agent.learn(curr_key, action, reward, next_key)
 
-        pygame.draw.rect(screen, color, cp, 2)
+        # E. Save Visuals
+        car["info"] = info
+        car["action"] = action  # Save for UI display
 
-    screen.blit(info["car_rot"], info["car_rect"])  # Draw the car
-    screen.blit(track_border_scaled, track_border_rect)  # Draw the track border
+        # F. Reset if Done
+        if done or info["finished_lap"]:
+            if info["finished_lap"]:
+                print(f"!!! Car {i} FINISHED LAP !!!")
 
-    sx, sy = info["ray_start"]
-    for hx, hy in info["ray_hits"]:
-        pygame.draw.line(screen, (0, 200, 255), (sx, sy), (hx, hy), 2)
-        pygame.draw.circle(screen, (255, 80, 80), (hx, hy), 3)
+            # Reset ONLY this car
+            cars[i] = create_new_state(i)
+            episode_total += 1
 
-    # display timer
-    seconds = state["current_time"] / 1000 if state["timer_running"] else 0.0
+        # Decay epsilon on checkpoint progress (not crashes)
+        if info.get("cp_advanced"):
+            agent.decay()
 
-    timer_text = font.render(f"Time: {seconds:.2f}s", True, (255, 255, 255))
-    screen.blit(timer_text, (20, 20))
+    # Update leader checkpoint crossings (visual highlight)
+    leader_rect = cars[0]["info"]["car_rect"] if cars[0]["info"] else None
+    if leader_rect is not None:
+        for cp_idx, cp in enumerate(checkpoints):
+            if cp_idx not in leader_crossed_cps and leader_rect.colliderect(cp["rect"]):
+                leader_crossed_cps.add(cp_idx)
 
-    cp_text = font.render(f"CP: {state['next_cp']}/{len(checkpoints)}", True, (255, 255, 255))
-    screen.blit(cp_text, (20, 45))
+    # --- DRAWING ---
+    screen.fill((30, 30, 30))
+    screen.blit(track_scaled, track_rect)
+    screen.blit(rotated_finish_line, finish_rect)
 
-    last_lap_text = font.render(f"LL: {fmt(state['last_lap'])}", True, (255, 255, 255))
-    screen.blit(last_lap_text, (20, 60))
+    # Draw Checkpoints as thin line pairs
+    for cp_idx, cp in enumerate(checkpoints):
+        color = (255, 162, 19) if cp_idx in leader_crossed_cps else (145, 211, 242)
+        for line_start, line_end in cp["lines"]:
+            pygame.draw.line(screen, color, line_start, line_end, 3)
 
-    best_lap_text = font.render(f"BL: {fmt(state['best_lap'])}", True, (255, 255, 255))
-    screen.blit(best_lap_text, (20, 75))
+    # Draw Cars
+    for i, car in enumerate(cars):
+        if car["info"] is None: continue
 
-    rays_text = font.render("Rays: " + " ".join(f"{d:3d}" for d in info["ray_distances"]), True, (255, 255, 255))
-    screen.blit(rays_text, (20, 95))  # display sensor distances
+        info = car["info"]
 
-    obs_text = font.render("Obs: " + " ".join(f"{v:.2f}" for v in obs[:7]), True, (255, 255, 255))
-    screen.blit(obs_text, (20, 120))
+        # Draw Leader (Car 0) with Rays and Red Color
+        if i == 0:
+            # Tint the rotated car red
+            leader_car = info["car_rot"].copy()
+            leader_car.fill((255, 50, 50, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            sx, sy = info["ray_start"]
+            for hx, hy in info["hits"]:
+                pygame.draw.line(screen, (0, 200, 255), (sx, sy), (hx, hy), 1)
+                pygame.draw.circle(screen, (255, 50, 50), (hx, hy), 2)
+            screen.blit(leader_car, info["car_rect"])
+        else:
+            # Draw Swarm (Green) without rays
+            screen.blit(info["car_rot"], info["car_rect"])
 
-    reward_text = font.render(f"Reward: {reward:.3f}", True, (255, 255, 255))
-    screen.blit(reward_text, (20, 145))
+    # UI (Stats from Leader)
+    leader_info = cars[0]["info"]
+    leader_reward = leader_info["reward"] if leader_info else 0
+    leader_action = cars[0].get("action", 0)
 
-    # action_text = font.render(f"Action: {action}", True, (255, 255, 255))
-    # screen.blit(action_text, (20, 170))
-
-    if done:
-        obs = reset(state)
+    ui_text = [
+        f"Agents: {N_AGENTS}",
+        f"Total Episodes: {episode_total}",
+        f"Epsilon: {agent.epsilon:.4f}",
+        f"Leader Reward: {leader_reward:.1f}",
+        f"Leader Action: {leader_action}"
+    ]
+    for i, line in enumerate(ui_text):
+        screen.blit(font.render(line, True, (255, 255, 255)), (10, 10 + i * 20))
 
     pygame.display.flip()
 
