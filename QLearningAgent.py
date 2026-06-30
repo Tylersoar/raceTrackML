@@ -1,13 +1,15 @@
 import numpy as np
 
 class QLearningAgent:
-    def __init__(self, n_actions, gamma=0.99, alpha=0.15, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01):
+    def __init__(self, n_actions, gamma=0.99, alpha=0.15, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01,alpha_decay=0.99995, alpha_min=0.05):
         self.n_actions = n_actions
         self.gamma = gamma
         self.alpha = alpha
         self.epsilon = epsilon
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
+        self.alpha_decay = alpha_decay
+        self.alpha_min = alpha_min
 
         # a dictionary that maps tuples -> action values
         # if a state is new 0s are returned
@@ -49,3 +51,7 @@ class QLearningAgent:
     def decay(self):
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
+
+    def decay_alpha(self):
+        if self.alpha > self.alpha_min:
+            self.alpha *= self.alpha_decay

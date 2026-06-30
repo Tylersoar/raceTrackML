@@ -17,7 +17,7 @@ clock = pygame.time.Clock()
 font = pygame.font.SysFont(None, 24)
 
 # --- HYPERPARAMETERS ---
-N_AGENTS = 1  # Run 100 cars at once
+N_AGENTS = 100  # Run 100 cars at once
 SWARM_DECAY = 0.995  # Decays per checkpoint hit: ~300 CPs (100 laps) → ε≈0.22
 
 
